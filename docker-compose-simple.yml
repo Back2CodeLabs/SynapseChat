@@ -1,0 +1,109 @@
+version: '3.8'
+
+# Version simplifiée sans build - images officielles
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: synapsechat-postgres
+    environment:
+      POSTGRES_USER: synapsechat
+      POSTGRES_PASSWORD: synapsechat123
+      POSTGRES_DB: synapsechat_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapsechat -d synapsechat_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - synapsechat-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: synapsechat-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - synapsechat-network
+
+  # Backend API - Image Python officielle
+  backend:
+    image: python:3.11-slim
+    container_name: synapsechat-backend
+    working_dir: /app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://synapsechat:synapsechat123@postgres:5432/synapsechat_db
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - AI_PROVIDER=ollama
+      #- OLLAMA_MODEL=mistral
+      - OLLAMA_MODEL=codestral
+      - ENABLE_RAG=True
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./backend:/app
+      - backend_cache:/root/.cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - synapsechat-network
+    extra_hosts:
+      - "ollama-vm:localhost"
+    command: >
+      bash -c "
+      apt-get update &&
+      apt-get install -y gcc g++ postgresql-client &&
+      pip install --no-cache-dir -r requirements.txt &&
+      python -c 'import sys; print(f\"Python {sys.version}\")' &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  # Frontend - Image Node officielle
+  frontend:
+    image: node:20-alpine
+    container_name: synapsechat-frontend
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000/api
+    volumes:
+      - ./frontend:/app
+      - frontend_modules:/app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - synapsechat-network
+    command: >
+      sh -c "
+      npm install &&
+      npm run dev -- --host 0.0.0.0
+      "
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_cache:
+  frontend_modules:
+
+networks:
+  synapsechat-network:
+    driver: bridge

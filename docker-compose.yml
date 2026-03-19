@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: synapsechat-postgres
+    environment:
+      POSTGRES_USER: synapsechat
+      POSTGRES_PASSWORD: synapsechat123
+      POSTGRES_DB: synapsechat_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapsechat -d synapsechat_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - synapsechat-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: synapsechat-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - synapsechat-network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: synapsechat-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://synapsechat:synapsechat123@postgres:5432/synapsechat_db
+      - REDIS_URL=redis://redis:6379/0
+      # Ollama est sur une VM distante (localhost)
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - AI_PROVIDER=ollama
+      #- OLLAMA_MODEL=mistral
+      - OLLAMA_MODEL=codestral
+      - ENABLE_RAG=True
+    volumes:
+      - ./backend:/app
+      - backend_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - synapsechat-network
+    # Permet au backend d'accéder à Ollama sur localhost
+    extra_hosts:
+      - "ollama-vm:localhost"
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: synapsechat-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000/api
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0
+    networks:
+      - synapsechat-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_data:
+
+networks:
+  synapsechat-network:
+    driver: bridge
